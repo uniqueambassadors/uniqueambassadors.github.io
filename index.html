@@ -537,7 +537,7 @@
 
     <button type="submit" class="submit-btn">
       <svg class="flame" viewBox="0 0 24 24" fill="none"><path d="M12 2c1 3-2 4-2 7a3 3 0 0 0 6 0c0-1-1-2-1-3 2 1 3 4 3 6a6 6 0 0 1-12 0c0-4 3-6 3-9 1 1 2 1 3-1z" fill="#D4B876"/></svg>
-      Show My Summary
+      Submit Travel Plan
     </button>
     <p class="error-msg" id="errorMsg">Please enter your name and answer the required questions above.</p>
     <p class="save-status" id="saveStatus"></p>
@@ -611,13 +611,6 @@
 </div>
 
 <script>
-  // =================================================================
-  // BACKEND CONNECTION
-  // Paste the Web App URL you get after deploying Code.gs (Google
-  // Apps Script bound to the "Travel Responses" Google Sheet).
-  // See setup instructions. Leave as-is and the app still works,
-  // it just only saves locally on this one device.
-  // =================================================================
   const APPS_SCRIPT_URL = "PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE";
 
   const backendReady = !APPS_SCRIPT_URL.startsWith("PASTE_");
@@ -625,12 +618,13 @@
   document.getElementById('liveDot').textContent = backendReady ? 'Live' : 'Local only';
   if (!backendReady) document.getElementById('liveDot').style.opacity = '0.5';
 
-  // Local fallback / instant-optimistic cache
   const LOCAL_KEY = 'ua_travel_responses';
+
   function localGetAll() {
     try { return JSON.parse(localStorage.getItem(LOCAL_KEY) || '{}'); }
     catch (err) { return {}; }
   }
+
   function localSaveOne(key, entry) {
     const all = localGetAll();
     all[key] = entry;
@@ -641,65 +635,78 @@
   function slugify(name) {
     return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'anon_' + Date.now();
   }
+
   function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
   }
 
-  let saveTimer = null;
   const saveStatusEl = document.getElementById('saveStatus');
 
-  function saveResponse(name, entry) {
+  async function saveResponse(name, entry) {
     const key = slugify(name);
     const merged = localSaveOne(key, entry);
     renderGroupSummary(merged);
 
-    if (!backendReady) return;
+    if (!backendReady) {
+      saveStatusEl.textContent = 'Saved on this device. Add the Apps Script URL to save to the shared Google Sheet.';
+      saveStatusEl.className = 'save-status error';
+      return { status: 'local' };
+    }
 
-    clearTimeout(saveTimer);
     saveStatusEl.textContent = 'Saving…';
     saveStatusEl.className = 'save-status saving';
-    saveTimer = setTimeout(() => {
-      fetch(APPS_SCRIPT_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(entry)
-      })
-        .then(r => r.json())
-        .then(() => {
-          saveStatusEl.textContent = 'Saved to the shared sheet \u2713';
-          saveStatusEl.className = 'save-status saved';
-          fetchGroupData();
-        })
-        .catch(() => {
-          saveStatusEl.textContent = 'Could not reach the shared sheet — saved on this device only.';
-          saveStatusEl.className = 'save-status error';
-        });
-    }, 600);
+
+    const response = await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(entry)
+    });
+
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+
+    const result = await response.json();
+    if (result.status && result.status !== 'ok') {
+      throw new Error(result.message || 'The Google Sheet rejected the response.');
+    }
+
+    saveStatusEl.textContent = 'Saved to the shared Google Sheet ✓';
+    saveStatusEl.className = 'save-status saved';
+
+    await fetchGroupData();
+    return result;
   }
 
-  function fetchGroupData() {
+  async function fetchGroupData() {
     if (!backendReady) {
       renderGroupSummary(localGetAll());
       return;
     }
-    fetch(APPS_SCRIPT_URL)
-      .then(r => r.json())
-      .then(rows => {
-        const all = {};
-        rows.forEach(r => {
-          const key = slugify(r.Name || r.name || '');
-          if (!key) return;
-          all[key] = {
-            name: r.Name || r.name,
-            minibus: r.Minibus || r.minibus,
-            spouse: r.Spouse || r.spouse,
-            private: r.Private || r.private,
-            rides: Number(r.Rides || r.rides || 0)
-          };
-        });
-        renderGroupSummary(all);
-      })
-      .catch(() => { /* keep showing last known state */ });
+
+    try {
+      const response = await fetch(APPS_SCRIPT_URL, { cache: 'no-store' });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+
+      const rows = await response.json();
+      const all = {};
+
+      rows.forEach(r => {
+        const name = String(r.Name || r.name || '').trim();
+        if (!name) return;
+
+        const key = slugify(name);
+        all[key] = {
+          name,
+          minibus: String(r.Minibus ?? r.minibus ?? 'no').toLowerCase(),
+          spouse: String(r.Spouse ?? r.spouse ?? 'no').toLowerCase(),
+          private: String(r.Private ?? r.private ?? 'no').toLowerCase(),
+          rides: Number(r.Rides ?? r.rides ?? 0) || 0
+        };
+      });
+
+      renderGroupSummary(all);
+    } catch (err) {}
   }
 
   function renderGroupSummary(all) {
@@ -709,15 +716,21 @@
     const privateNames = [];
 
     entries.forEach(e => {
-      if (e.minibus === 'yes') {
+      const name = String(e.name || '').trim();
+      if (!name) return;
+
+      if (String(e.minibus).toLowerCase() === 'yes') {
         minibusCount++;
-        minibusNames.push({ name: e.name, spouse: e.spouse === 'yes' });
-        if (e.spouse === 'yes') spouseCount++;
+        const hasSpouse = String(e.spouse).toLowerCase() === 'yes';
+        if (hasSpouse) spouseCount++;
+        minibusNames.push({ name, spouse: hasSpouse });
       }
-      if (e.private === 'yes') {
+
+      if (String(e.private).toLowerCase() === 'yes') {
         privateCount++;
-        seatCount += (Number(e.rides) || 0);
-        privateNames.push({ name: e.name, rides: Number(e.rides) || 0 });
+        const rides = Number(e.rides) || 0;
+        seatCount += rides;
+        privateNames.push({ name, rides });
       }
     });
 
@@ -726,13 +739,11 @@
     document.getElementById('statPrivate').textContent = privateCount;
     document.getElementById('statSeats').textContent = seatCount;
 
-    const minibusEl = document.getElementById('rosterMinibus');
-    minibusEl.innerHTML = minibusNames.length
+    document.getElementById('rosterMinibus').innerHTML = minibusNames.length
       ? minibusNames.map(p => `<li>${escapeHtml(p.name)}${p.spouse ? ' <span class="tag">+ spouse</span>' : ''}</li>`).join('')
       : '<li class="empty">No responses yet.</li>';
 
-    const privateEl = document.getElementById('rosterPrivate');
-    privateEl.innerHTML = privateNames.length
+    document.getElementById('rosterPrivate').innerHTML = privateNames.length
       ? privateNames.map(p => `<li>${escapeHtml(p.name)}${p.rides > 0 ? ` <span class="tag">+ ${p.rides} ${p.rides === 1 ? 'seat' : 'seats'}</span>` : ''}</li>`).join('')
       : '<li class="empty">No responses yet.</li>';
   }
@@ -740,6 +751,13 @@
   const revealBtn = document.getElementById('revealNamesBtn');
   const revealLabel = document.getElementById('revealNamesLabel');
   const rosterWrap = document.getElementById('rosterWrap');
+
+  function openTravelerNames() {
+    rosterWrap.classList.add('open');
+    revealBtn.classList.add('expanded');
+    revealLabel.textContent = 'Hide Traveler Names';
+  }
+
   revealBtn.addEventListener('click', () => {
     const nowOpen = rosterWrap.classList.toggle('open');
     revealBtn.classList.toggle('expanded', nowOpen);
@@ -749,161 +767,224 @@
   fetchGroupData();
   setInterval(fetchGroupData, 15000);
 
-  // =================================================================
-  // FORM BEHAVIOR
-  // =================================================================
   const state = { minibus: null, spouse: null, private: null, rides: 0 };
 
   const minibusButtons = document.querySelectorAll('[data-group="minibus"] .toggle-btn');
-  const privateButtons = document.querySelectorAll('[data-group="private"] .toggle-btn');
   const spouseButtons = document.querySelectorAll('[data-group="spouse"] .toggle-btn');
-  const mutexNote = document.getElementById('mutexNote');
+  const privateButtons = document.querySelectorAll('[data-group="private"] .toggle-btn');
   const rideMinusBtn = document.getElementById('rideMinus');
   const ridePlusBtn = document.getElementById('ridePlus');
   const rideCountEl = document.getElementById('rideCount');
+  const mutexNote = document.getElementById('mutexNote');
+  const nameInput = document.getElementById('name');
+  const form = document.getElementById('travelForm');
+  const summaryBox = document.getElementById('summaryBox');
+  const errorMsg = document.getElementById('errorMsg');
 
   function setGroupActive(buttons, value) {
-    buttons.forEach(b => b.classList.toggle('active', b.dataset.value === value));
+    buttons.forEach(btn => btn.classList.toggle('active', btn.dataset.value === value));
   }
 
-  // Traveling by the minibus makes the private-transport questions
-  // not applicable: both Yes/No options and the ride-count stepper
-  // are disabled and cleared, and are no longer required to submit.
-  function applyPrivateTransportLock() {
-    const minibusYes = state.minibus === 'yes';
-
-    privateButtons.forEach(b => { b.disabled = minibusYes; });
-    rideMinusBtn.disabled = minibusYes;
-    ridePlusBtn.disabled = minibusYes;
-
-    if (minibusYes) {
-      state.private = null;
-      setGroupActive(privateButtons, null);
-      state.rides = 0;
-      rideCountEl.textContent = '0';
-    }
-
-    mutexNote.classList.toggle('show', minibusYes);
+  function resetSpouse() {
+    state.spouse = null;
+    setGroupActive(spouseButtons, null);
   }
 
-  function wireToggleGroup(groupName, buttons) {
-    buttons.forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (btn.disabled) return;
-        state[groupName] = btn.dataset.value;
-        setGroupActive(buttons, btn.dataset.value);
+  function resetPrivate() {
+    state.private = null;
+    state.rides = 0;
+    setGroupActive(privateButtons, null);
+    rideCountEl.textContent = '0';
+  }
 
-        if (groupName === 'minibus') {
-          applyPrivateTransportLock();
-        }
-        maybeAutoSave();
-      });
+  function applyModeLocks() {
+    const busSelected = state.minibus === 'yes';
+    const privateSelected = state.private === 'yes';
+
+    privateButtons.forEach(btn => { btn.disabled = busSelected; });
+    minibusButtons.forEach(btn => { btn.disabled = privateSelected; });
+    spouseButtons.forEach(btn => { btn.disabled = privateSelected || !busSelected; });
+
+    rideMinusBtn.disabled = !privateSelected || busSelected;
+    ridePlusBtn.disabled = !privateSelected || busSelected;
+
+    mutexNote.textContent = busSelected
+      ? '✓ Minibus selected — private transportation and ride seats are disabled.'
+      : privateSelected
+        ? '✓ Private transportation selected — minibus and spouse are disabled.'
+        : '';
+    mutexNote.classList.toggle('show', busSelected || privateSelected);
+  }
+
+  applyModeLocks();
+
+  minibusButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      const value = btn.dataset.value;
+
+      if (value === 'yes') {
+        state.minibus = 'yes';
+        resetPrivate();
+      } else {
+        state.minibus = 'no';
+        resetSpouse();
+      }
+
+      setGroupActive(minibusButtons, value);
+      applyModeLocks();
     });
-  }
+  });
 
-  wireToggleGroup('minibus', minibusButtons);
-  wireToggleGroup('spouse', spouseButtons);
-  wireToggleGroup('private', privateButtons);
+  privateButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      const value = btn.dataset.value;
+
+      if (value === 'yes') {
+        state.private = 'yes';
+        state.minibus = 'no';
+        resetSpouse();
+        setGroupActive(minibusButtons, null);
+      } else {
+        state.private = 'no';
+        state.rides = 0;
+        rideCountEl.textContent = '0';
+      }
+
+      setGroupActive(privateButtons, value);
+      applyModeLocks();
+    });
+  });
+
+  spouseButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      state.spouse = btn.dataset.value;
+      setGroupActive(spouseButtons, btn.dataset.value);
+    });
+  });
 
   ridePlusBtn.addEventListener('click', () => {
     if (ridePlusBtn.disabled) return;
     state.rides = Math.min(state.rides + 1, 20);
-    rideCountEl.textContent = state.rides;
-    maybeAutoSave();
+    rideCountEl.textContent = String(state.rides);
   });
+
   rideMinusBtn.addEventListener('click', () => {
     if (rideMinusBtn.disabled) return;
     state.rides = Math.max(state.rides - 1, 0);
-    rideCountEl.textContent = state.rides;
-    maybeAutoSave();
+    rideCountEl.textContent = String(state.rides);
   });
 
-  const nameInput = document.getElementById('name');
-  nameInput.addEventListener('input', maybeAutoSave);
-
-  function maybeAutoSave() {
-    const name = nameInput.value.trim();
-    if (!name) return;
-    if (state.minibus === null && state.private === null && state.spouse === null && state.rides === 0) return;
-    saveResponse(name, buildPayload(name));
-  }
-
-  // Private-transport fields are only meaningful (and only required)
-  // when the minibus answer is "no" -- when it's "yes" they're locked
-  // and treated as not applicable.
   function buildPayload(name) {
-    const minibusYes = state.minibus === 'yes';
+    const byBus = state.minibus === 'yes';
+    const byPrivate = state.private === 'yes';
+
     return {
-      name: name,
-      minibus: state.minibus || 'no',
-      spouse: state.spouse || 'no',
-      private: minibusYes ? 'no' : (state.private || 'no'),
-      rides: minibusYes ? 0 : state.rides,
+      name,
+      minibus: byBus ? 'yes' : 'no',
+      spouse: byBus && state.spouse === 'yes' ? 'yes' : 'no',
+      private: byPrivate ? 'yes' : 'no',
+      rides: byPrivate ? Number(state.rides) || 0 : 0,
       updatedAt: Date.now()
     };
   }
 
   function isFormComplete() {
     const name = nameInput.value.trim();
-    if (!name || state.minibus === null || state.spouse === null) return false;
-    if (state.minibus === 'no' && state.private === null) return false;
+    if (!name) return false;
+
+    const byBus = state.minibus === 'yes';
+    const byPrivate = state.private === 'yes';
+
+    if (byBus === byPrivate) return false;
+    if (byBus && state.spouse === null) return false;
+
     return true;
   }
-
-  const form = document.getElementById('travelForm');
-  const summaryBox = document.getElementById('summaryBox');
-  const errorMsg = document.getElementById('errorMsg');
-
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const name = nameInput.value.trim();
-
-    if (!isFormComplete()) {
-      errorMsg.classList.add('show');
-      summaryBox.classList.remove('open');
-      return;
-    }
-    errorMsg.classList.remove('show');
-
-    saveResponse(name, buildPayload(name));
-
-    renderSummary(name);
-    summaryBox.classList.add('open');
-    summaryBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  });
 
   function renderSummary(name) {
     document.getElementById('summaryName').textContent = name;
     const lines = [];
 
     if (state.minibus === 'yes') {
-      lines.push(`<strong>Minibus:</strong> Yes${state.spouse === 'yes' ? ', traveling with spouse' : ''}.`);
-    } else {
-      lines.push('<strong>Minibus:</strong> Not traveling by minibus.');
+      lines.push('<strong>Transportation:</strong> Unique Ambassadors minibus.');
+      lines.push(`<strong>Spouse:</strong> ${state.spouse === 'yes' ? 'Yes, bringing spouse.' : 'No spouse on the minibus.'}`);
     }
 
     if (state.private === 'yes') {
-      const rideText = state.rides > 0
-        ? `Can offer a ride to up to ${state.rides} ${state.rides === 1 ? 'person' : 'people'}.`
-        : 'No spare seats to offer.';
-      lines.push(`<strong>Private transport:</strong> Yes. ${rideText}`);
-    } else {
-      lines.push('<strong>Private transport:</strong> Not traveling by private car.');
+      lines.push('<strong>Transportation:</strong> Private transportation.');
+      lines.push(
+        state.rides > 0
+          ? `<strong>Ride availability:</strong> Can give a ride to ${state.rides} ${state.rides === 1 ? 'person' : 'people'}.`
+          : '<strong>Ride availability:</strong> No spare seats offered.'
+      );
     }
 
     document.getElementById('summaryLines').innerHTML = lines.join('<br><br>');
   }
 
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const name = nameInput.value.trim();
+
+    if (!isFormComplete()) {
+      errorMsg.textContent = 'Please enter your name, choose either minibus or private transportation, and answer the applicable sub-question.';
+      errorMsg.classList.add('show');
+      summaryBox.classList.remove('open');
+      return;
+    }
+
+    errorMsg.classList.remove('show');
+
+    const submitBtn = form.querySelector('.submit-btn');
+    const originalSubmitHtml = submitBtn.innerHTML;
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Submitting…';
+
+    try {
+      const payload = buildPayload(name);
+
+      await saveResponse(name, payload);
+
+      renderSummary(name);
+      summaryBox.classList.add('open');
+      openTravelerNames();
+
+      document.querySelector('.group-card').scrollIntoView({
+        behavior: 'smooth',
+        block: 'start'
+      });
+    } catch (err) {
+      saveStatusEl.textContent = 'Could not save to the shared Google Sheet. Please try again.';
+      saveStatusEl.className = 'save-status error';
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = originalSubmitHtml;
+    }
+  });
+
   document.getElementById('copyBtn').addEventListener('click', () => {
     const name = document.getElementById('summaryName').textContent;
-    const text = document.getElementById('summaryLines').innerText.replace(/\n\n/g, '\n');
-    const fullText = `Travel Plans — ${name}\n\n${text}`;
+    const text = document.getElementById('summaryLines').innerText.replace(/
+
+/g, '
+');
+    const fullText = `Travel Plans — ${name}
+
+${text}`;
+
     navigator.clipboard.writeText(fullText).then(() => {
       const btn = document.getElementById('copyBtn');
       const original = btn.innerHTML;
       btn.classList.add('copied');
-      btn.innerHTML = '\u2713 Copied — paste into the forum';
-      setTimeout(() => { btn.innerHTML = original; btn.classList.remove('copied'); }, 2200);
+      btn.innerHTML = '✓ Copied';
+      setTimeout(() => {
+        btn.innerHTML = original;
+        btn.classList.remove('copied');
+      }, 2200);
     });
   });
 </script>
