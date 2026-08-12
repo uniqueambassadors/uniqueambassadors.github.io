@@ -601,7 +601,7 @@
 
     <p class="backend-warning" id="backendWarning">
       This page isn't connected to the shared Google Sheet yet, so responses only save on this device.
-      Deploy the Apps Script backend and paste its Web App  into <code>APPS_SCRIPT_</code> near the
+      Deploy the Apps Script backend and paste its Web App URL into <code>APPS_SCRIPT_URL</code> near the
       top of the script in this file to make this list live for everyone. See the setup instructions.
     </p>
   </div>
@@ -611,7 +611,7 @@
 </div>
 
 <script>
-  const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxLQ8zrM_hg1Rj5X-8XqBT_qIbxIP_2zOeib7awNHtKZPZqgrdKw5Hol27m313is7T2/exec";
+  const APPS_SCRIPT_URL = "PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE";
 
   const backendReady = !APPS_SCRIPT_URL.startsWith("PASTE_");
   document.getElementById('backendWarning').classList.toggle('show', !backendReady);
