@@ -205,6 +205,13 @@
   }
   .stepper button:hover{ background:var(--teal); color:#fff; }
   .stepper button:focus-visible{ outline:2px solid var(--sky); outline-offset:2px; }
+  .stepper button:disabled{
+    opacity:0.3;
+    cursor:not-allowed;
+    background:#fff;
+    color:var(--teal);
+  }
+  .stepper button:disabled:hover{ background:#fff; color:var(--teal); }
   .stepper .count{
     font-family:'Playfair Display', serif;
     font-weight:700;
@@ -516,7 +523,7 @@
         <button type="button" class="toggle-btn" data-value="yes">Yes</button>
         <button type="button" class="toggle-btn no-variant" data-value="no">No</button>
       </div>
-      <p class="locked-note" id="mutexNote">&#9888; You can't take the minibus and drive privately — pick one.</p>
+      <p class="locked-note" id="mutexNote">&#9888; Traveling by minibus — you can skip these.</p>
     </div>
 
     <div class="field">
@@ -532,7 +539,7 @@
       <svg class="flame" viewBox="0 0 24 24" fill="none"><path d="M12 2c1 3-2 4-2 7a3 3 0 0 0 6 0c0-1-1-2-1-3 2 1 3 4 3 6a6 6 0 0 1-12 0c0-4 3-6 3-9 1 1 2 1 3-1z" fill="#D4B876"/></svg>
       Show My Summary
     </button>
-    <p class="error-msg" id="errorMsg">Please enter your name and answer all three Yes/No questions above.</p>
+    <p class="error-msg" id="errorMsg">Please enter your name and answer the required questions above.</p>
     <p class="save-status" id="saveStatus"></p>
   </form>
 
@@ -611,7 +618,7 @@
   // See setup instructions. Leave as-is and the app still works,
   // it just only saves locally on this one device.
   // =================================================================
-  const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwOiTdnoa5SRvUign88wYseIBTC0KkdL3wFTmXvxvJVObPDX7fLR5UPpQLrQl7q3vW4/exec";
+  const APPS_SCRIPT_URL = "PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE";
 
   const backendReady = !APPS_SCRIPT_URL.startsWith("PASTE_");
   document.getElementById('backendWarning').classList.toggle('show', !backendReady);
@@ -751,19 +758,32 @@
   const privateButtons = document.querySelectorAll('[data-group="private"] .toggle-btn');
   const spouseButtons = document.querySelectorAll('[data-group="spouse"] .toggle-btn');
   const mutexNote = document.getElementById('mutexNote');
+  const rideMinusBtn = document.getElementById('rideMinus');
+  const ridePlusBtn = document.getElementById('ridePlus');
+  const rideCountEl = document.getElementById('rideCount');
 
   function setGroupActive(buttons, value) {
     buttons.forEach(b => b.classList.toggle('active', b.dataset.value === value));
   }
 
-  function applyMutualExclusion() {
+  // Traveling by the minibus makes the private-transport questions
+  // not applicable: both Yes/No options and the ride-count stepper
+  // are disabled and cleared, and are no longer required to submit.
+  function applyPrivateTransportLock() {
     const minibusYes = state.minibus === 'yes';
-    const privateYes = state.private === 'yes';
 
-    privateButtons.forEach(b => { b.disabled = minibusYes && b.dataset.value === 'yes'; });
-    minibusButtons.forEach(b => { b.disabled = privateYes && b.dataset.value === 'yes'; });
+    privateButtons.forEach(b => { b.disabled = minibusYes; });
+    rideMinusBtn.disabled = minibusYes;
+    ridePlusBtn.disabled = minibusYes;
 
-    mutexNote.classList.toggle('show', minibusYes || privateYes);
+    if (minibusYes) {
+      state.private = null;
+      setGroupActive(privateButtons, null);
+      state.rides = 0;
+      rideCountEl.textContent = '0';
+    }
+
+    mutexNote.classList.toggle('show', minibusYes);
   }
 
   function wireToggleGroup(groupName, buttons) {
@@ -773,11 +793,9 @@
         state[groupName] = btn.dataset.value;
         setGroupActive(buttons, btn.dataset.value);
 
-        if (groupName === 'minibus' && btn.dataset.value === 'yes' && state.private === 'yes') {
-          state.private = 'no';
-          setGroupActive(privateButtons, 'no');
+        if (groupName === 'minibus') {
+          applyPrivateTransportLock();
         }
-        applyMutualExclusion();
         maybeAutoSave();
       });
     });
@@ -787,13 +805,14 @@
   wireToggleGroup('spouse', spouseButtons);
   wireToggleGroup('private', privateButtons);
 
-  const rideCountEl = document.getElementById('rideCount');
-  document.getElementById('ridePlus').addEventListener('click', () => {
+  ridePlusBtn.addEventListener('click', () => {
+    if (ridePlusBtn.disabled) return;
     state.rides = Math.min(state.rides + 1, 20);
     rideCountEl.textContent = state.rides;
     maybeAutoSave();
   });
-  document.getElementById('rideMinus').addEventListener('click', () => {
+  rideMinusBtn.addEventListener('click', () => {
+    if (rideMinusBtn.disabled) return;
     state.rides = Math.max(state.rides - 1, 0);
     rideCountEl.textContent = state.rides;
     maybeAutoSave();
@@ -806,14 +825,29 @@
     const name = nameInput.value.trim();
     if (!name) return;
     if (state.minibus === null && state.private === null && state.spouse === null && state.rides === 0) return;
-    saveResponse(name, {
+    saveResponse(name, buildPayload(name));
+  }
+
+  // Private-transport fields are only meaningful (and only required)
+  // when the minibus answer is "no" -- when it's "yes" they're locked
+  // and treated as not applicable.
+  function buildPayload(name) {
+    const minibusYes = state.minibus === 'yes';
+    return {
       name: name,
       minibus: state.minibus || 'no',
       spouse: state.spouse || 'no',
-      private: state.private || 'no',
-      rides: state.rides,
+      private: minibusYes ? 'no' : (state.private || 'no'),
+      rides: minibusYes ? 0 : state.rides,
       updatedAt: Date.now()
-    });
+    };
+  }
+
+  function isFormComplete() {
+    const name = nameInput.value.trim();
+    if (!name || state.minibus === null || state.spouse === null) return false;
+    if (state.minibus === 'no' && state.private === null) return false;
+    return true;
   }
 
   const form = document.getElementById('travelForm');
@@ -824,21 +858,14 @@
     e.preventDefault();
     const name = nameInput.value.trim();
 
-    if (!name || state.minibus === null || state.spouse === null || state.private === null) {
+    if (!isFormComplete()) {
       errorMsg.classList.add('show');
       summaryBox.classList.remove('open');
       return;
     }
     errorMsg.classList.remove('show');
 
-    saveResponse(name, {
-      name: name,
-      minibus: state.minibus,
-      spouse: state.spouse,
-      private: state.private,
-      rides: state.rides,
-      updatedAt: Date.now()
-    });
+    saveResponse(name, buildPayload(name));
 
     renderSummary(name);
     summaryBox.classList.add('open');
